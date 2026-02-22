@@ -1,108 +1,98 @@
-# NewsDigest - Pull and summarize top news stories by topic or keyword
-# Usage: .\run-digest.ps1 -Topic "AI news" [-Count 5] [-OutputFile "digest.txt"]
+# NewsDigest - Pull and summarize top news by topic or keyword
+# Usage: .\run-digest.ps1 [-Topic "AI"] [-Count 5] [-OutputFile "digest.txt"]
+# Omit -Topic to get a full daily digest across all categories
 # Author: @drizzy8423
 
 param(
-    [Parameter(Mandatory=$true)]
-    [string]$Topic,
+    [string]$Topic = "",
     [int]$Count = 5,
     [string]$Timeframe = "today",
     [string]$OutputFile = ""
 )
 
 $ErrorActionPreference = "Continue"
-$date = Get-Date -Format "yyyy-MM-dd"
 $timestamp = Get-Date -Format "dddd, MMMM dd, yyyy h:mm tt"
 
-$header = @"
-
-==========================
-  NEWSDIGEST: $Topic
-  Date: $timestamp
-  Timeframe: $Timeframe
-==========================
-
-"@
-
-Write-Host $header
-
-# Build search query with timeframe
-$query = $Topic
-switch ($Timeframe.ToLower()) {
-    "today"      { $query = "$Topic news today" }
-    "this week"  { $query = "$Topic news this week" }
-    "this month" { $query = "$Topic news this month" }
-    default      { $query = "$Topic news today" }
+# Default topics when none specified - covers everything
+if ($Topic) {
+    $searchTopics = @($Topic)
+} else {
+    $searchTopics = @(
+        "top news today",
+        "technology AI",
+        "business finance markets",
+        "cybersecurity",
+        "politics",
+        "crypto bitcoin",
+        "sports highlights",
+        "science health"
+    )
 }
 
-Write-Host "Searching: $query"
-Write-Host "Fetching top $Count stories..."
+Write-Host ""
+Write-Host "============================================"
+Write-Host "  NEWSDIGEST -- Daily Briefing"
+Write-Host "  $timestamp"
+Write-Host "============================================"
 Write-Host ""
 
-# Fetch from Brave Search RSS / public news feeds
-$results = @()
+$allOutput = [System.Collections.Generic.List[string]]::new()
+$totalStories = 0
+$storiesPerTopic = [Math]::Max(1, [Math]::Ceiling($Count / $searchTopics.Count))
 
-# Try multiple free RSS sources
-$feedUrls = @(
-    "https://feeds.feedburner.com/TechCrunch",
-    "https://rss.cnn.com/rss/edition.rss",
-    "https://feeds.reuters.com/reuters/topNews",
-    "https://feeds.bbci.co.uk/news/rss.xml"
-)
+foreach ($searchTopic in $searchTopics) {
+    $query = $searchTopic + " " + $Timeframe
+    $searchEncoded = [System.Uri]::EscapeDataString($query)
+    $amp = [char]38
+    $feedUrl = "https://news.google.com/rss/search?q=" + $searchEncoded + $amp + "hl=en-US" + $amp + "gl=US" + $amp + "ceid=US:en"
 
-$searchEncoded = [System.Uri]::EscapeDataString($query)
+    Write-Host ("--- " + $searchTopic.ToUpper() + " ---")
+    $allOutput.Add("--- " + $searchTopic.ToUpper() + " ---")
 
-# Use Brave Search RSS if available, fall back to Google News
-$googleNewsUrl = "https://news.google.com/rss/search?q=$searchEncoded&hl=en-US&gl=US&ceid=US:en"
+    try {
+        $wc = New-Object System.Net.WebClient
+        $wc.Headers.Add("User-Agent", "Mozilla/5.0")
+        [xml]$feed = $wc.DownloadString($feedUrl)
+        $items = $feed.rss.channel.item | Select-Object -First $storiesPerTopic
 
-try {
-    [xml]$feed = (New-Object System.Net.WebClient).DownloadString($googleNewsUrl)
-    $items = $feed.rss.channel.item | Select-Object -First $Count
+        foreach ($item in $items) {
+            $title  = ($item.title -replace '<[^>]+>','').Trim()
+            $source = if ($item.source.'#text') { $item.source.'#text' } else { "News" }
+            $link   = $item.link
 
-    $storyNum = 0
-    foreach ($item in $items) {
-        $storyNum++
-        $title   = $item.title  -replace '<[^>]+>',''
-        $source  = if ($item.source.'#text') { $item.source.'#text' } else { "Google News" }
-        $link    = $item.link
-        $pubDate = $item.pubDate
+            $pubDate = ""
+            try {
+                $parsedDate = [DateTime]::Parse($item.pubDate)
+                $pubDate = $parsedDate.ToString("MMM dd, h:mm tt")
+            } catch { }
 
-        # Clean up date
-        try {
-            $parsedDate = [DateTime]::Parse($pubDate)
-            $pubDate = $parsedDate.ToString("MMM dd, h:mm tt")
-        } catch { }
+            Write-Host ("  * " + $title)
+            Write-Host ("    " + $source + "  " + $pubDate)
+            Write-Host ("    " + $link)
+            Write-Host ""
 
-        $storyText = @"
-$storyNum. $title
-   Source: $source | $pubDate
-   Link: $link
-
-"@
-        Write-Host $storyText
-        $results += $storyText
+            $allOutput.Add("  * " + $title)
+            $allOutput.Add("    " + $source + "  " + $pubDate)
+            $allOutput.Add("    " + $link)
+            $allOutput.Add("")
+            $totalStories++
+        }
+    } catch {
+        $errMsg = "  [Could not fetch: " + $_.Exception.Message + "]"
+        Write-Host $errMsg
+        $allOutput.Add($errMsg)
     }
 
-    Write-Host "=========================="
-    Write-Host "  Stories pulled: $storyNum"
-    Write-Host "  Topic: $Topic"
-    Write-Host "  Run this digest through your AI agent for summaries and key themes."
-    Write-Host "=========================="
-    Write-Host ""
-
-} catch {
-    Write-Host "Could not fetch news feed. Error: $_"
-    Write-Host ""
-    Write-Host "Tip: Run this query in your AI agent for a manual digest:"
-    Write-Host "  'Search for top news stories about $Topic today and summarize them'"
-    exit 1
+    Start-Sleep -Milliseconds 400
 }
 
-# Save to file if requested
-if ($OutputFile) {
-    $fullOutput = $header + ($results -join "") + "`n[Digest generated: $timestamp]"
-    Set-Content -Path $OutputFile -Value $fullOutput -Encoding UTF8
-    Write-Host "Saved to: $OutputFile"
-}
-
+Write-Host "============================================"
+Write-Host ("  Total stories: " + $totalStories)
+Write-Host ("  Generated: " + $timestamp)
+Write-Host "============================================"
 Write-Host "Powered by NewsDigest | github.com/dremonkey23/newsdigest-skill"
+
+if ($OutputFile) {
+    Set-Content -Path $OutputFile -Value ($allOutput -join [System.Environment]::NewLine) -Encoding UTF8
+    Write-Host ("Saved to: " + $OutputFile)
+}
